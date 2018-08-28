@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.db import models
+from django.db.models import Q
 from django.utils.safestring import mark_safe
 from django.utils.translation import pgettext_lazy
 from django_countries.fields import CountryField
@@ -20,18 +21,23 @@ from .utils import (
 
 class ShippingZone(models.Model):
     name = models.CharField(max_length=100)
-    countries = CountryField(multiple=True)
+    countries = CountryField(multiple=True, default=[], blank=True)
+    default = models.BooleanField(default=False)
 
     def __str__(self):
         return self.name
 
     def countries_display(self):
-        if len(self.countries) <= 3:
-            return ', '.join((country.name for country in self.countries))
+        countries = self.countries
+        if self.default:
+            from ..dashboard.shipping.forms import get_available_countries
+            countries = get_available_countries()
+        if len(countries) <= 3:
+            return ', '.join((country.name for country in countries))
         return pgettext_lazy(
             'Number of countries shipping zone apply to',
             '%(num_of_countries)d countries' % {
-                'num_of_countries': len(self.countries)})
+                'num_of_countries': len(countries)})
 
     @property
     def price_range(self):
@@ -60,11 +66,16 @@ class ShippingMethodQueryset(models.QuerySet):
         shippment to given country(code), that are applicable to given
         price & weight total.
         """
-        qs = self.prefetch_related('shipping_zone').order_by('price')
-        qs = qs.filter(shipping_zone__countries__contains=country_code)
+        # If dedicated shipping zone for the country exists, we should use it
+        # in the first place
+        qs = self.filter(shipping_zone__countries__contains=country_code)
+        if not qs.exists():
+            # Otherwise default shipping zone should be used
+            qs = self.filter(shipping_zone__default=True)
+
+        qs = qs.prefetch_related('shipping_zone').order_by('price')
         price_based_methods = applicable_price_based_methods(price, qs)
-        weight_based_methods = applicable_weight_based_methods(
-            weight, qs)
+        weight_based_methods = applicable_weight_based_methods(weight, qs)
         return price_based_methods | weight_based_methods
 
 
